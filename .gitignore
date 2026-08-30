@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+library/
+*.log
+.cookies*
+scidown_cookies*.txt
+harvest.log
+.DS_Store
