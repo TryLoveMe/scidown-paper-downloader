@@ -110,3 +110,15 @@ open 下载工作台.html                                             # 人工�
 | verify.php 反复出现 | IP 被标记 | 停脚本,人工浏览器操作,数小时后再试 |
 | 网盘里"离线文件"条目点下载提示过期 | 正常,那是临时缓存 | 不以此为准,以直链为准 |
 | PDF 打开是 5KB HTML | 那是错误页 | 别入库!题名核对会拦住它 |
+
+## 进阶路线(2026-08-30 实测,详见 `docs/04-实战复盘-20260830.md`)
+
+| 场景 | 打法 |
+|---|---|
+| scidown 验证码 | 免验证:`GET /lxapp.php?lx=<任意值>` 收 yz cookie 三件套(600s);或自算 `yztoken=md5("1sciq"+ztime+"1")` |
+| scixue 空结果 | 必须同时带登录 cookie(`dlzt` 不能少)+ yz 三件套 + Referer;结果在 `input#uname` |
+| Wiley 无缓存 | scixue 会给 `share.scifree.shop/zxwileyq.php?...auth_key(5min)` → POST `onlinelibrary.wiley.com/action/authenticateSharedSP`(免账号)→ 同源 fetch `doi/pdfdirect/{DOI}` 拿字节 |
+| 出版社区域被墙(EKB 等) | 查 `web.archive.org/cdx` 存档,`/web/<ts>id_/<url>` 取原始字节 |
+| 印度 NOPR 文献 | 仓库已改名 `nopr.niscpr.res.in`,bitstream 直链可 curl |
+| sci-hub 镜像簇 | .jp(点"No")、.ee/.ren(点 Turnstile 复选框)、存储直链 curl 可下;`pdf.bban.top/<DOI>.pdf` 与 `sci.bban.top/pdf/` 是两个不同前缀都要试 |
+| 坏条目识别 | 同一 DOI 各镜像返回字节级相同的无关 PDF = Sci-Hub 共享库坏条目,全网无解,只能找站外拷贝(如 `/uptodate/<PII>.pdf`) |
