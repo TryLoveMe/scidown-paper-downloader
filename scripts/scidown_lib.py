@@ -53,8 +53,10 @@ UA_360 = UA_CHROME + " QIHU 360SE"
 SCIDOWN = "https://www.scidown.cn"
 SRC_OPJC = "http://92.223.124.29/{key}.opjc"          # open-access.shop 的提货凭证地址
 BBAN = "https://sci.bban.top/pdf/{doi}.pdf?download=true"   # 分流线路2 (公开)
+BBAN_ALT = "https://pdf.bban.top/{doi}.pdf"               # 另一前缀(sci-hub.ee 代理系), 与 BBAN 不同源
 ZY9 = "http://zy9.xeak.top/pdf/{doi}.pdf"              # 主线路1 (CF 挡脚本, 浏览器可过)
 GATEWAY = "zdwe.sciokk.cn"                             # WebVPN 网关 host (登录解析后出现)
+SCIFREE_WILEY = "share.scifree.shop/zxwileyq.php"     # Wiley 未缓存实时代理(5min auth_key, 见 docs/01 §2.6)
 
 TIMEOUT = 60
 PDF_MAGIC = b"%PDF"
@@ -265,12 +267,15 @@ def fetch_pdf(url, referer=None, ua=UA_CHROME, engine="auto", timeout=TIMEOUT):
 
 
 def download_cached(doi, referer=None):
-    """路径1: 缓存直链(bban 公开 CDN)。requests 失败自动换 curl 引擎。返回 (bytes|None, url, status)"""
-    url = BBAN.format(doi=doi)
-    b, st = fetch_pdf(url, referer=referer, engine="requests")
-    if not b:
-        b, st = fetch_pdf(url, referer=referer, engine="curl")
-    return (b, url, st) if b else (None, url, st)
+    """路径1: 缓存直链(bban 公开 CDN, 双前缀都试)。requests 失败自动换 curl 引擎。返回 (bytes|None, url, status)"""
+    for tmpl in (BBAN, BBAN_ALT):
+        url = tmpl.format(doi=doi)
+        b, st = fetch_pdf(url, referer=referer, engine="requests")
+        if not b:
+            b, st = fetch_pdf(url, referer=referer, engine="curl")
+        if b:
+            return (b, url, st)
+    return (None, BBAN.format(doi=doi), "404/403 both prefixes")
 
 
 def download_gateway(url, referer="http://down.sciokk.cn/sci/down1.php"):
@@ -296,3 +301,72 @@ def parse_doi_list(text):
             seen.add(d)
             out.append(d)
     return out
+
+
+# ---------------------------------------------------------------- 免验证通道(2026-08-30 逆向)
+
+def make_yz_cookies(now=None):
+    """
+    顶象验证码公式绕过(verify.php 的 JS 混淆已解出, 3 样本 MATCH):
+        yztoken = md5(f"1sciq{ztime}1")
+    cookie 三件套, 600 秒有效。等价于 GET /lxapp.php?lx=<任意> 的 Set-Cookie。
+    返回 dict {yztime, yzcount, yztoken};now 可注入便于测试。
+    """
+    ztime = int(now if now is not None else time.time())
+    yztoken = hashlib.md5(f"1sciq{ztime}1".encode()).hexdigest()
+    return {"yztime": str(ztime), "yzcount": "1", "yztoken": yztoken}
+
+
+def fetch_scixue(session, doi, yz, referer=None):
+    """
+    带 yz 三件套查询解析页。要求 session 已登录(尤其 dlzt cookie, 缺失会静默空结果)。
+    返回 (html, note)。note 用于区分失败原因:
+      - "no-referer"   请求信息有误(需带 Referer)
+      - "verify-redir" 无 yz/过期(302 verify.php)
+      - "no-dlzt"      页面出现 PHP Notice Undefined index: dlzt(登录 cookie 不全)
+      - "ok"           200 正常(再取 uname; 空 value 还需按 降级 vs 未收录 分类)
+    """
+    url = f"{SCIDOWN}/scixue.php?doi={quote(doi)}"
+    headers = {}
+    if referer:
+        headers["Referer"] = referer
+    # yz cookie 只对 scidown 域生效
+    for k, v in yz.items():
+        session.s.cookies.set(k, v, domain="www.scidown.cn")
+    try:
+        r = session.s.get(url, timeout=TIMEOUT, headers=headers, allow_redirects=False)
+    except requests.RequestException as e:
+        return None, f"req err: {e}"
+    if r.status_code in (301, 302) and "verify" in r.headers.get("Location", ""):
+        return None, "verify-redir"
+    if "请求信息有误" in r.text:
+        return None, "no-referer"
+    if "Undefined index: dlzt" in r.text:
+        return r.text, "no-dlzt"
+    return r.text, "ok"
+
+
+def extract_resolved_url(html):
+    """从 scixue 响应提取 <input id="uname" name="a" value="..."> 的值。"""
+    m = re.search(r'id="uname"[^>]*value="([^"]*)"', html) or \
+        re.search(r'name="a"[^>]*value="([^"]*)"', html)
+    return m.group(1) if m else ""
+
+
+def classify_resolved(url):
+    """按 uname 值判断后端/状态(与 docs/01 §2.4 枚举一致)。"""
+    if not url:
+        return "empty"
+    if "zy9.xeak.top" in url:
+        return "zy9"
+    if "sci.bban.top" in url or "pdf.bban.top" in url:
+        return "bban"
+    if "zdwe.sciokk.cn" in url:
+        return "zdwe"
+    if SCIFREE_WILEY in url:
+        return "wiley"
+    if "lanzou" in url:
+        return "lanzou"
+    if "doi.org" in url:
+        return "publisher-fallback"   # 主站无缓存(Elsevier 系常见)
+    return "other"
